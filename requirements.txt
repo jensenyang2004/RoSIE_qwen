@@ -1,0 +1,10 @@
+# Own environment: transformers 5.x (Qwen3-VL) is not the mice environment's.
+# diffusers is pinned to the release the files in qwen21/ were copied from; change both together.
+diffusers==0.43.0
+transformers>=5.17
+torch>=2.6
+accelerate
+safetensors
+pillow
+numpy
+tqdm
