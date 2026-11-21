@@ -1,6 +1,8 @@
-# Own environment: transformers 5.x (Qwen3-VL) is not the mice environment's.
 # diffusers is pinned to the release the files in qwen21/ were copied from; change both together.
-diffusers==0.43.0
+# 0.41.0 is the newest release that still runs on Python 3.10 (0.42+ need 3.11). Its Qwen-Image-2.1 code differs
+# from 0.43.0 only in tensor-parallel / Neuron refactors (same numbers); the pipeline file is identical.
+# transformers 5.x (Qwen3-VL) is not the mice environment's: install it here, never into the mice venv.
+diffusers==0.41.0
 transformers>=5.17
 torch>=2.6
 accelerate

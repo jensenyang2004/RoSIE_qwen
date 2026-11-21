@@ -80,8 +80,11 @@ def check_full(args) -> bool:
     call = dict(prompt=s["edit_inst_single"], image=s["image"], generator=None)
     out = {}
     for name in ("official", "vendored"):
-        pipe = (Official.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16).to(args.device) if name == "official"
-                else load_pipeline(MODEL_ID, args.device))
+        if name == "official":
+            pipe = Official.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
+            pipe.enable_model_cpu_offload(device=args.device) if args.cpu_offload else pipe.to(args.device)
+        else:
+            pipe = load_pipeline(MODEL_ID, args.device, cpu_offload=args.cpu_offload)
         print(name, type(pipe.transformer).__module__)
         call["generator"] = torch.Generator("cpu").manual_seed(0)
         out[name] = pipe(**call).images[0]
@@ -99,6 +102,7 @@ if __name__ == "__main__":
     p.add_argument("--dataset_root", type=str, default="../3D-bench/image/mice_bench")
     p.add_argument("--sample_id", type=str, default="06")
     p.add_argument("--device", type=str, default="cuda")
+    p.add_argument("--cpu_offload", action="store_true", help="for GPUs under ~40 GB")
     args = p.parse_args()
     ok = check_full(args) if args.full else check_tiny()
     print("PASS" if ok else "FAIL")

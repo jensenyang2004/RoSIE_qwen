@@ -6,11 +6,25 @@ backbone.
 
 ## Setup
 
-Use a separate environment. This repo needs transformers 5.x for Qwen3-VL, which the mice environment does not have.
+Use a separate environment: this repo needs transformers 5.x for Qwen3-VL, which must not go into the mice venv.
+The new venv can borrow everything else (torch, accelerate, ...) from the mice venv through a `.pth` file. Its own
+packages come first on `sys.path`, so the diffusers/transformers installed here shadow mice's, and the mice venv
+is never changed:
 
 ```bash
-conda create -n rosie-qwen python=3.12 -y && conda activate rosie-qwen
-pip install -r requirements.txt
+MICE_VENV=../mice/.venv                              # the mice uv venv (adjust the path)
+uv venv --python $MICE_VENV/bin/python .venv          # same Python as mice, so its compiled packages load
+SP=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+MICE_SP=$($MICE_VENV/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+echo "$MICE_SP" > "$SP/_mice_base.pth"
+source .venv/bin/activate
+uv pip install "diffusers==0.41.0" "transformers>=5.17"
+python -c "import torch, diffusers, transformers; print(torch.__version__, diffusers.__version__, transformers.__version__)"
+```
+
+A standalone environment works too: `uv venv .venv && uv pip install -r requirements.txt`.
+
+```bash
 python check_vendored.py                 # CPU, no weights: vendored == installed diffusers
 python check_vendored.py --full          # GPU: whole pipeline, official vs vendored, max pixel diff must be 0
 ```
@@ -32,7 +46,7 @@ Results go to `results/qwen21_<exp_name>/{id}_result.png`, resized to the source
 
 | Path | What |
 |---|---|
-| `qwen21/transformer_qwenimage21.py`, `qwen21/pipeline_qwenimage21.py` | Copied from diffusers v0.43.0 with only the imports changed. **Never edit them**: experiments wrap them at runtime (attention processors, block wrappers) or live in new files. |
+| `qwen21/transformer_qwenimage21.py`, `qwen21/pipeline_qwenimage21.py` | Copied from diffusers v0.41.0 with only the imports changed. **Never edit them**: experiments wrap them at runtime (attention processors, block wrappers) or live in new files. |
 | `qwen21/__init__.py` | `load_pipeline()`: the vendored pipeline with the vendored transformer (plain `from_pretrained` would load diffusers' own class). |
 | `bench.py` | MICE-Bench / LoMOE-Bench loader, and `output_size()`, the pipeline's generation size. |
 | `infer_baseline.py` | The official Turbo edit with one instruction (`edit_inst_single`) and no instance control. |

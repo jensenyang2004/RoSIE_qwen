@@ -1,5 +1,5 @@
 """
-Qwen-Image-2.1 vendored from diffusers v0.43.0 (see the header of each file), and the loader every script uses.
+Qwen-Image-2.1 vendored from diffusers v0.41.0 (see the header of each file), and the loader every script uses.
 """
 import torch
 
