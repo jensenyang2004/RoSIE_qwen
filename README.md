@@ -38,9 +38,11 @@ everything in bf16. On smaller cards, pass `--cpu_offload`.
 python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice --sample_ids 06 09
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe
+python infer_bind.py --dataset_root ../3D-bench/image/mice_bench --exp_name bind_smoke --sample_ids 06 09 276
 ```
 
-Results go to `results/qwen21_<exp_name>/{id}_result.png`, resized to the source size as in mice.
+Results go to `results/qwen21_<exp_name>/` (baseline) and `results/qwen21bind_<exp_name>/` (binding) as
+`{id}_result.png`, resized to the source size as in mice.
 
 ## Layout
 
@@ -51,6 +53,12 @@ Results go to `results/qwen21_<exp_name>/{id}_result.png`, resized to the source
 | `bench.py` | MICE-Bench / LoMOE-Bench loader, and `output_size()`, the pipeline's generation size. |
 | `infer_baseline.py` | The official Turbo edit with one instruction (`edit_inst_single`) and no instance control. |
 | `check_vendored.py` | Equality checks for the vendored code. |
+| `rosie/tokens.py` | Token assignment: prompt tokenization (exactly the pipeline's), target-word positions, grid masks, the joint-sequence `Layout`. |
+| `rosie/binding.py` | The binding mask (mice's final rules AND the model's block-causal rule) and `BindAttnProcessor`. |
+| `rosie/instance_edit.py` | One edit: wraps the pipeline's `encode_prompt` (global + instance prompts) and installs the processor. |
+| `infer_bind.py` | Binding only, no steering, on the bench. |
+| `check_binding.py` | CPU checks of the binding (tiny random model); `--tokens` checks token positions with the real processor. |
+| `runs.py` | Run-folder conventions shared by the scripts. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
 
@@ -70,13 +78,13 @@ Results go to `results/qwen21_<exp_name>/{id}_result.png`, resized to the source
 
 ## Plan
 
-1. Baseline: run `check_vendored.py --full`, then the Turbo baseline on MICE-Bench and LoMOE-Bench.
-2. Token assignment: instance masks → latent-grid indices in the source and target blocks; instance prompts encoded
+1. Baseline (done: `check_vendored.py --full` gives identical images): run the Turbo baseline on both benches.
+2. Token assignment (written, checked on CPU): instance masks → latent-grid indices in the source and target blocks; instance prompts encoded
    separately and appended before the target (mice's `outer_local_prompts`); target-word spans from the tokenizer
    offsets.
-3. Binding: one attention processor whose mask is the model's block-causal rule AND the instance binding, used for
-   the step-0 prefill and (target rows) for the cached steps. An all-allowed mask must reproduce the baseline
-   exactly. Check binding alone before adding steering.
+3. Binding (written, checked on CPU, not yet run on GPU): one attention processor whose mask is the model's block-causal rule AND the instance binding, used for
+   the step-0 prefill and (target rows) for the cached steps. With the binding off it matches the model's own
+   processor (to float rounding). Check binding alone before adding steering.
 4. Steering: wrap `block.forward` at runtime and rotate the target slice of each block's update (`residual_rotate.py`
    from mice). Anchors are captured at step 0: the source write s_t per position, and the target-word write u_k per
    instance. The block schedule has to be re-diagnosed on the 32 blocks.
