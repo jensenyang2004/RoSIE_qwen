@@ -1,14 +1,16 @@
 """
-One instance-controlled edit: tokens (rosie/tokens.py) -> layout -> binding mask (rosie/binding.py) -> the vendored
-pipeline, wrapped at runtime (its encode_prompt and the attention processors), never edited.
+One instance-controlled edit: tokens (rosie/tokens.py) -> layout -> binding mask (rosie/binding.py), optionally
+rotation steering (rosie/steer.py) -> the vendored pipeline, wrapped at runtime (its encode_prompt, the attention
+processors and block hooks), never edited.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 from PIL import Image
 
 from bench import output_size
 from rosie.binding import allowed_mask, binding
+from rosie.steer import RotationSteer, steering
 from rosie.tokens import GLOBAL_PROMPT, LOCAL_TEMPLATE, Layout, Prompter, build_layout, grid_masks, tokenize
 
 
@@ -57,12 +59,14 @@ def instance_prompts(pipe, prep: dict):
 
 
 def edit(pipe, sample: dict, resolution: int = 1024, local_mode: str = "text", strict: bool = True,
-         bind: bool = True, seed: int = 0, use_kv_cache: bool = True):
-    """Returns (PIL image at the generation size, prep)."""
+         bind: bool = True, seed: int = 0, use_kv_cache: bool = True, steer: RotationSteer | None = None):
+    """Returns (PIL image at the generation size, prep). steer: rotation steering (rosie/steer.py); its per-block
+    stats are in steer.stats afterwards."""
     prep = prepare(Prompter.from_pipe(pipe), sample, resolution, local_mode, strict)
     L = prep["layout"]
     allowed = allowed_mask(L, bind)
-    with instance_prompts(pipe, prep), binding(pipe.transformer, allowed, L.H * L.W):
+    steered = nullcontext() if steer is None else steering(pipe.transformer, steer, L, pipe.config.sample_sigmas)
+    with instance_prompts(pipe, prep), binding(pipe.transformer, allowed, L.H * L.W), steered:
         out = pipe(prompt=GLOBAL_PROMPT, image=sample["image"], height=prep["h"], width=prep["w"],
                    output_resolution=resolution, use_kv_cache=use_kv_cache,
                    generator=torch.Generator("cpu").manual_seed(seed)).images[0]

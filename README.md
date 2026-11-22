@@ -39,10 +39,13 @@ python infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name 
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/mice_bench --exp_name turbo_mice
 ./run_2gpu.sh infer_baseline.py --dataset_root ../3D-bench/image/lomoe_bench --exp_name turbo_lomoe
 python infer_bind.py --dataset_root ../3D-bench/image/mice_bench --exp_name bind_smoke --sample_ids 06 09 276
+python infer_steer.py --dataset_root ../3D-bench/image/mice_bench --exp_name rot_smoke --sample_ids 08 09 276
 ```
 
-Results go to `results/qwen21_<exp_name>/` (baseline) and `results/qwen21bind_<exp_name>/` (binding) as
-`{id}_result.png`, resized to the source size as in mice.
+Results go to `results/qwen21_<exp_name>/` (baseline), `results/qwen21bind_<exp_name>/` (binding) and
+`results/qwen21rot_<exp_name>/` (binding + steering) as `{id}_result.png`, resized to the source size as in mice.
+The steering run also writes `{id}_steer.json`: per step and block, the mean turn of each term (deg) and the
+cosines to the anchors.
 
 ## Layout
 
@@ -58,6 +61,9 @@ Results go to `results/qwen21_<exp_name>/` (baseline) and `results/qwen21bind_<e
 | `rosie/instance_edit.py` | One edit: wraps the pipeline's `encode_prompt` (global + instance prompts) and installs the processor. |
 | `infer_bind.py` | Binding only, no steering, on the bench. |
 | `check_binding.py` | CPU checks of the binding (tiny random model); `--tokens` checks token positions with the real processor. |
+| `rosie/steer.py` | Rotation steering: block hooks that turn each block's update of the target tokens; anchors captured in the step-0 prefill. |
+| `infer_steer.py` | Binding + steering on the bench (mice's final strengths by default). |
+| `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice` or `--mice`), and cached anchors give the same output as recomputing them every step. |
 | `runs.py` | Run-folder conventions shared by the scripts. |
 
 ## What differs from FLUX.2-klein (read from the diffusers code)
@@ -82,11 +88,12 @@ Results go to `results/qwen21_<exp_name>/` (baseline) and `results/qwen21bind_<e
 2. Token assignment (written, checked on CPU): instance masks → latent-grid indices in the source and target blocks; instance prompts encoded
    separately and appended before the target (mice's `outer_local_prompts`); target-word spans from the tokenizer
    offsets.
-3. Binding (written, checked on CPU, not yet run on GPU): one attention processor whose mask is the model's block-causal rule AND the instance binding, used for
+3. Binding (done, run on GPU; the lower-memory grouped processor is checked on CPU only): one attention processor whose mask is the model's block-causal rule AND the instance binding, used for
    the step-0 prefill and (target rows) for the cached steps. With the binding off it matches the model's own
    processor (to float rounding). Check binding alone before adding steering.
-4. Steering: wrap `block.forward` at runtime and rotate the target slice of each block's update (`residual_rotate.py`
-   from mice). Anchors are captured at step 0: the source write s_t per position, and the target-word write u_k per
-   instance. The block schedule has to be re-diagnosed on the 32 blocks.
+4. Steering (written, checked on CPU, not yet run on GPU): block hooks rotate the target slice of each block's
+   update (mice's `residual_rotate.py`, same math). The source write s_i and the target-word write u_k are captured
+   in the step-0 prefill. Defaults are mice's final strengths in all 32 blocks; contact runs on steps 0–2, the
+   same noise range as mice's steps 0–1. Strengths and the block schedule may need re-tuning on this model.
 
 License: Qwen Research License (model weights).

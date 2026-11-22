@@ -4,18 +4,20 @@ Checks for the token assignment and the text binding.
     python check_binding.py            CPU, no weights, a tiny random transformer on a synthetic layout:
         1. bind off: BindAttnProcessor == the model's own processor (step 0 and cached steps)
         2. bind on, cached steps == recomputing everything (the target rows of the mask are the right ones)
-        3. bind on, 1 block: changing instance prompt 2 changes only instance 2's target tokens; changing the
+        3. the attention groups rebuild the mask exactly (step 0 rows and cached-step rows)
+        4. bind on, 1 block: changing instance prompt 2 changes only instance 2's target tokens; changing the
            global prompt changes only the background's; every instance prompt row reads only its own prompt and
            its instance's source tokens
     python check_binding.py --tokens   the real Qwen processor (downloads ~12 MB, no weights) on bench samples:
-        layout sizes, and the target words decoded from their positions must equal the bench targets
+        layout sizes, the target words decoded from their positions must equal the bench targets, and the
+        attention groups of the real layout rebuild its mask exactly
 """
 import argparse
 import sys
 
 import torch
 
-from rosie.binding import BindAttnProcessor, allowed_mask, binding
+from rosie.binding import allowed_mask, attention_groups, binding
 from rosie.tokens import Segment, build_layout
 
 
@@ -60,6 +62,20 @@ def run(model, x, steps, cache):
     return outs
 
 
+def groups_rebuild(allowed, n_tgt: int) -> tuple:
+    """(exact, [number of groups at step 0, on cached steps])."""
+    n = allowed.shape[0]
+    exact, counts = True, []
+    for rows in (torch.arange(n), torch.arange(n - n_tgt, n)):
+        groups = attention_groups(allowed, rows)
+        dense = torch.zeros(len(rows), n, dtype=torch.bool)
+        for q, k, m in groups:
+            dense[q[:, None], k] = True if m is None else m
+        exact &= torch.equal(dense, allowed[rows])
+        counts.append(len(groups))
+    return exact, counts
+
+
 def check_tiny() -> bool:
     L = synthetic_layout()
     T = L.H * L.W
@@ -70,6 +86,10 @@ def check_tiny() -> bool:
         nonlocal ok
         ok &= bool(cond)
         print(f"{'ok  ' if cond else 'FAIL'} {name} {extra}")
+
+    for bind in (False, True):
+        exact, counts = groups_rebuild(allowed_mask(L, bind), T)
+        report(f"attention groups rebuild the mask (bind {bind})", exact, f"groups {counts}")
 
     with torch.no_grad():
         model = tiny_model(2)
@@ -138,6 +158,10 @@ def check_tokens(args) -> bool:
             prep = prepare(P, s, local_mode=mode)
             L = prep["layout"]
             print(f"{sid} [{mode}] {prep['w']}x{prep['h']} {L.summary()}")
+            exact, counts = groups_rebuild(allowed_mask(L), L.H * L.W)
+            ok &= exact
+            print(f"   {'ok  ' if exact else 'FAIL'} attention groups rebuild the mask: {counts[0]} groups at step 0, "
+                  f"{counts[1]} on cached steps")
             for k, seg in enumerate(prep["locs"]):
                 words = proc.tokenizer.decode(seg.ids[seg.tgt_words]).strip()
                 good = words == s["targets"][k] and len(L.tgt_words[k]) == len(seg.tgt_words)
