@@ -8,9 +8,12 @@ Checks for the token assignment and the text binding.
         4. bind on, 1 block: changing instance prompt 2 changes only instance 2's target tokens; changing the
            global prompt changes only the background's; every instance prompt row reads only its own prompt and
            its instance's source tokens
+        5. prompt positions (rosie/positions.py): the layout's positions equal the model's RoPE; with "shared", 1 block,
+           each instance's target tokens == a run with only its own prompt (and with "stacked" they differ)
     python check_binding.py --tokens   the real Qwen processor (downloads ~12 MB, no weights) on bench samples:
-        layout sizes, the target words decoded from their positions must equal the bench targets, and the
-        attention groups of the real layout rebuild its mask exactly
+        layout sizes, the target words decoded from their positions must equal the bench targets, the
+        attention groups of the real layout rebuild its mask exactly, and the layout's RoPE positions equal the
+        model's
 """
 import argparse
 import sys
@@ -18,20 +21,21 @@ import sys
 import torch
 
 from rosie.binding import allowed_mask, attention_groups, binding
+from rosie.positions import positions, prompt_positions, rope
 from rosie.tokens import Segment, build_layout
 
 
-def synthetic_layout():
-    """Global: 3 text, 4 slots (4x4 source), 5 text; instance prompts of 4 and 3 tokens; instances = the top-left
-    and bottom-right 2x2 of the 4x4 grid."""
+def synthetic_layout(local_lens=(4, 3), which=(0, 1)):
+    """Global: 3 text, 4 slots (4x4 source), 5 text; instance prompts of 4 and 3 tokens (target words from token 2
+    on); instances = the top-left and bottom-right 2x2 of the 4x4 grid. which: the instances (and prompts) kept."""
     slot = torch.tensor([False] * 3 + [True] * 4 + [False] * 5)
     glob = Segment(torch.zeros(12, dtype=torch.long), slot, slice(0, 12))
-    locs = [Segment(torch.zeros(4, dtype=torch.long), torch.zeros(4, dtype=torch.bool), slice(0, 4), [], [2, 3]),
-            Segment(torch.zeros(3, dtype=torch.long), torch.zeros(3, dtype=torch.bool), slice(0, 3), [], [2])]
     m0, m1 = torch.zeros(4, 4, dtype=torch.bool), torch.zeros(4, 4, dtype=torch.bool)
     m0[:2, :2] = True
     m1[2:, 2:] = True
-    return build_layout(glob, locs, [m0, m1], 4, 4)
+    locs = [Segment(torch.zeros(n, dtype=torch.long), torch.zeros(n, dtype=torch.bool), slice(0, n), [],
+                    list(range(2, n))) for n in local_lens]
+    return build_layout(glob, [locs[k] for k in which], [[m0, m1][k] for k in which], 4, 4)
 
 
 def tiny_model(num_layers):
@@ -136,6 +140,35 @@ def check_tiny() -> bool:
             own = set(range(sl.start, sl.stop)) | set(src[L.inst[k]].tolist())
             keys = set(allowed[sl].any(0).nonzero().flatten().tolist())
             report(f"instance prompt {k + 1} reads only itself and its instance's source tokens", keys <= own)
+
+        # prompt positions (rosie/positions.py)
+        img_mask = x["img_mask"][0]
+        ipm = torch.repeat_interleave(img_mask, torch.where(img_mask, 4, 1))
+        table = one.pos_embed(x["img_shapes"][0], ipm, device="cpu")
+        report("positions(stacked) == the model's RoPE", torch.equal(table, rope(one.pos_embed, *positions(L), "cpu")))
+        L2 = synthetic_layout((4, 4))
+        x2 = inputs(L2, torch.Generator().manual_seed(2))
+        f2 = positions(L2, "shared")[0]
+        report("shared: prompt 2 at prompt 1's positions", torch.equal(f2[L2.local[1]], f2[L2.local[0]]))
+
+        def tgt_out_pos(LL, xx, mode):
+            with binding(one, allowed_mask(LL), T), prompt_positions(one, LL, mode):
+                return one(**xx, timestep=torch.tensor([0.9]), return_dict=False)[0][0, -T:]
+
+        enc, n_g = x2["encoder_hidden_states"], 12
+        for mode in ("shared", "stacked"):
+            both = tgt_out_pos(L2, x2, mode)
+            for k in (0, 1):
+                Lk = synthetic_layout((4, 4), which=(k,))
+                xk = dict(x2, encoder_hidden_states=torch.cat([enc[:, :n_g], enc[:, n_g + 4 * k:n_g + 4 * k + 4]], 1),
+                          img_mask=torch.cat([Lk.img_mask, torch.ones(T // 4, dtype=torch.bool)])[None])
+                d = (both[L2.inst[k]] - tgt_out_pos(Lk, xk, mode)[L2.inst[k]]).abs().max().item()
+                if mode == "shared":
+                    report(f"shared, 1 block: instance {k + 1} == a run with only its prompt", d < 1e-5,
+                           f"max|diff|={d:.2g}")
+                elif k == 1:
+                    report("stacked, 1 block: instance 2 != a run with only its prompt (the check can fail)", d > 1e-3,
+                           f"max|diff|={d:.2g}")
     return ok
 
 
@@ -148,6 +181,8 @@ def check_tokens(args) -> bool:
     from rosie.tokens import Prompter
 
     proc = Qwen3VLProcessor.from_pretrained(MODEL_ID, subfolder="processor")
+    from qwen21.transformer_qwenimage21 import QwenImage21Rope
+    rope_model = QwenImage21Rope(10000, [16, 56, 56])
     pipe = QwenImage21Pipeline(scheduler=None, vae=None, text_encoder=None, processor=proc, transformer=None)
     P = Prompter.from_pipe(pipe)
     bench = Bench(args.dataset_root)
@@ -162,6 +197,15 @@ def check_tokens(args) -> bool:
             ok &= exact
             print(f"   {'ok  ' if exact else 'FAIL'} attention groups rebuild the mask: {counts[0]} groups at step 0, "
                   f"{counts[1]} on cached steps")
+            ipm = torch.repeat_interleave(L.img_mask, torch.where(L.img_mask, 4, 1))
+            ipm = torch.cat([ipm, torch.ones(L.H * L.W, dtype=torch.bool)])
+            same = torch.equal(rope_model([(1, L.H, L.W)] * 2, ipm, "cpu"), rope(rope_model, *positions(L), "cpu"))
+            f = positions(L, "shared")[0]
+            ok &= same
+            print(f"   {'ok  ' if same else 'FAIL'} positions(stacked) == the model's RoPE; instance prompts start at "
+                  f"{[int(f0) for f0 in positions(L)[0][[sl.start for sl in L.local]]]} (stacked), all at "
+                  f"{int(f[L.local[0].start])} (shared); target frame {int(positions(L)[0][L.tgt.start])} -> "
+                  f"{int(f[L.tgt.start])}")
             for k, seg in enumerate(prep["locs"]):
                 words = proc.tokenizer.decode(seg.ids[seg.tgt_words]).strip()
                 good = words == s["targets"][k] and len(L.tgt_words[k]) == len(seg.tgt_words)

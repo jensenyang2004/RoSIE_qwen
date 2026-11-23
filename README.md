@@ -61,6 +61,7 @@ cosines to the anchors.
 | `rosie/instance_edit.py` | One edit: wraps the pipeline's `encode_prompt` (global + instance prompts) and installs the processor. |
 | `infer_bind.py` | Binding only, no steering, on the bench. |
 | `check_binding.py` | CPU checks of the binding (tiny random model); `--tokens` checks token positions with the real processor. |
+| `rosie/positions.py` | RoPE positions of the joint sequence; `--prompt_pos shared` puts every instance prompt at the first one's positions. |
 | `rosie/steer.py` | Rotation steering: block hooks that turn each block's update of the target tokens; anchors captured in the step-0 prefill. |
 | `infer_steer.py` | Binding + steering on the bench (mice's final strengths by default). |
 | `check_steer.py` | CPU checks: the rotation equals mice's `ResidualRotate` (needs `../mice` or `--mice`), and cached anchors give the same output as recomputing them every step. |
@@ -76,6 +77,11 @@ cosines to the anchors.
   centred on zero, so source token i and target token i share a position.
 - **Attention is block-causal**: `q >= k or same image`. Text is causal, the source sees only the text before it, and
   the target sees everything. Text and source never attend to the target.
+- **Text positions share the image axes**: a text token at position p gets (frame, h, w) = (p, p, p) in RoPE; an
+  image block sits at frame = where it starts, h/w = its grid centred on zero. Stacking instance prompts (mice's
+  layout) therefore shifts each later prompt relative to the image grid; in FLUX.2 text had its own axis, so it did
+  not. With the stacked layout only the first instance prompt gets followed (08, 09, 276); `--prompt_pos shared` gives
+  every prompt the first one's positions.
 - **Prefix cache**: text and source are modulated at t = 0, so they do not depend on the step. Step 0 computes the
   whole sequence and stores the prefix K/V. Steps 1–7 run only the target tokens against the cache. Anything read
   from the text or source (the steering anchors) must be captured at step 0; the cache keeps only K/V.

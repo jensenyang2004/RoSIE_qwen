@@ -30,6 +30,9 @@ def parse_args():
     p.add_argument("--no_strict", action="store_true", help="keep overlapping masks (mice: --strict_masks on)")
     p.add_argument("--no_bind", action="store_true", help="same prompts, no binding (the model's own mask)")
     p.add_argument("--no_kv_cache", action="store_true", help="recompute the text/source prefix every step")
+    p.add_argument("--prompt_pos", type=str, default="stacked", choices=["stacked", "shared"],
+                   help="RoPE positions of the instance prompts (rosie/positions.py): stacked one after another (the "
+                        "model's own), or shared = every prompt at the first one's positions")
     return p.parse_args()
 
 
@@ -47,7 +50,7 @@ def main():
         s = bench[sid]
         result, prep = edit(pipe, s, resolution=args.resolution, local_mode=args.local_mode,
                             strict=not args.no_strict, bind=not args.no_bind, seed=args.seed,
-                            use_kv_cache=not args.no_kv_cache)
+                            use_kv_cache=not args.no_kv_cache, prompt_pos=args.prompt_pos)
         (save_dir / f"{sid}_layout.json").write_text(json.dumps(prep["layout"].summary()))
         save_result(result, s["image"], save_dir / f"{sid}_result.png")
 
