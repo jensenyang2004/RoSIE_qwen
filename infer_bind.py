@@ -16,6 +16,7 @@ from tqdm import tqdm
 from bench import Bench
 from qwen21 import MODEL_ID, load_pipeline
 from rosie.instance_edit import edit
+from rosie.schedule import resample_sigmas
 from runs import add_run_args, run_folder, save_environment, save_result, todo
 
 
@@ -33,6 +34,8 @@ def parse_args():
     p.add_argument("--prompt_pos", type=str, default="stacked", choices=["stacked", "shared"],
                    help="RoPE positions of the instance prompts (rosie/positions.py): stacked one after another (the "
                         "model's own), or shared = every prompt at the first one's positions")
+    p.add_argument("--steps", type=int, default=None, help="denoising steps on the curve of Turbo's schedule "
+                   "(rosie/schedule.py); default: the model's own 8")
     return p.parse_args()
 
 
@@ -45,12 +48,15 @@ def main():
         return
     pipe = load_pipeline(args.model, args.device, cpu_offload=args.cpu_offload)
     save_environment(save_dir, args, args.model)
+    sigmas = None if args.steps is None else resample_sigmas(pipe.config.sample_sigmas, args.steps)
+    if sigmas is not None:
+        print(f"{len(sigmas)} steps, sigma " + " ".join(f"{s:.3f}" for s in sigmas))
 
     for sid in tqdm(ids):
         s = bench[sid]
         result, prep = edit(pipe, s, resolution=args.resolution, local_mode=args.local_mode,
                             strict=not args.no_strict, bind=not args.no_bind, seed=args.seed,
-                            use_kv_cache=not args.no_kv_cache, prompt_pos=args.prompt_pos)
+                            use_kv_cache=not args.no_kv_cache, prompt_pos=args.prompt_pos, sigmas=sigmas)
         (save_dir / f"{sid}_layout.json").write_text(json.dumps(prep["layout"].summary()))
         save_result(result, s["image"], save_dir / f"{sid}_result.png")
 

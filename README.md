@@ -86,7 +86,9 @@ cosines to the anchors.
   whole sequence and stores the prefix K/V. Steps 1–7 run only the target tokens against the cache. Anything read
   from the text or source (the steering anchors) must be captured at step 0; the cache keeps only K/V.
 - **Turbo**: 8 steps with the schedule saved in `model_index.json`: σ = 1.0, .978, .954, .927, .895, .845, .705,
-  .415. Six of the eight steps are above σ = 0.84. CFG is 1, and the default output is 1024².
+  .415. Six of the eight steps are above σ = 0.84. CFG is 1, and the default output is 1024². The pipeline
+  ignores `num_inference_steps` when the model has `sample_sigmas`; `--steps N` (infer_bind.py, infer_steer.py)
+  resamples this curve to N steps (`rosie/schedule.py`).
 
 ## Plan
 

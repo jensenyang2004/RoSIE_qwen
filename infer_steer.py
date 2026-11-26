@@ -6,6 +6,7 @@ counts.
 
     python infer_steer.py --sample_ids 08 09 276 --exp_name rot_smoke
     python infer_steer.py --sample_ids 08 09 276 --exp_name rot_noins --rot_ins 0     (one term off)
+    python infer_steer.py --sample_ids 08 09 276 --exp_name rot_s16 --steps 16       (16 steps on the Turbo curve)
     ./run_2gpu.sh infer_steer.py --exp_name rot_mice
 """
 import argparse
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from bench import Bench
 from qwen21 import MODEL_ID, load_pipeline
 from rosie.instance_edit import edit
+from rosie.schedule import remap_steps, resample_sigmas
 from rosie.steer import TERMS, RotationSteer
 from runs import add_run_args, run_folder, save_environment, save_result, todo
 
@@ -46,8 +48,11 @@ def parse_args():
     p.add_argument("--rot_bg", type=float, default=0.35, help="background: fraction of the way to the source write")
     p.add_argument("--rot_ins", type=float, default=0.2, help="instruction: fraction of the way to the target-word "
                    "write")
+    p.add_argument("--steps", type=int, default=None, help="denoising steps on the curve of Turbo's schedule "
+                   "(rosie/schedule.py); default: the model's own 8")
     p.add_argument("--ctc_steps", type=str, default="0,1,2", help="steps of the contact term, \"all\" or \"none\" "
-                   "(0,1,2 = the noise range of mice's steps 0,1)")
+                   "(0,1,2 = the noise range of mice's steps 0,1). The *_steps are Turbo's 8 steps; with --steps "
+                   "they move to the new steps over the same noise range")
     p.add_argument("--src_steps", type=str, default="all")
     p.add_argument("--bg_steps", type=str, default="all")
     p.add_argument("--ins_steps", type=str, default="all")
@@ -72,9 +77,16 @@ def main():
         return
     pipe = load_pipeline(args.model, args.device, cpu_offload=args.cpu_offload)
     save_environment(save_dir, args, args.model)
+    base = list(pipe.config.sample_sigmas)
+    sigmas = None if args.steps is None else resample_sigmas(base, args.steps)
+    on = {t: steps(getattr(args, f"{t}_steps")) for t in TERMS}
+    if sigmas is not None:
+        on = {t: remap_steps(v, base, sigmas) for t, v in on.items()}
+        print(f"{len(sigmas)} steps, sigma " + " ".join(f"{s:.3f}" for s in sigmas))
+        print("term steps: " + ", ".join(f"{t} {'all' if v is None else list(v)}" for t, v in on.items()))
     steer = RotationSteer(rot_ctc=args.rot_ctc, rot_src=args.rot_src, rot_bg=args.rot_bg, rot_ins=args.rot_ins,
-                          ctc_steps=steps(args.ctc_steps), src_steps=steps(args.src_steps),
-                          bg_steps=steps(args.bg_steps), ins_steps=steps(args.ins_steps), sigma_terms=terms,
+                          ctc_steps=on["ctc"], src_steps=on["src"],
+                          bg_steps=on["bg"], ins_steps=on["ins"], sigma_terms=terms,
                           local_tau=args.local_tau, bg_margin=args.bg_margin, bg_tau=args.bg_tau,
                           max_turn_deg=args.max_turn)
 
@@ -82,7 +94,8 @@ def main():
         s = bench[sid]
         result, prep = edit(pipe, s, resolution=args.resolution, local_mode=args.local_mode,
                             strict=not args.no_strict, bind=not args.no_bind, seed=args.seed,
-                            use_kv_cache=not args.no_kv_cache, prompt_pos=args.prompt_pos, steer=steer)
+                            use_kv_cache=not args.no_kv_cache, prompt_pos=args.prompt_pos, steer=steer,
+                            sigmas=sigmas)
         (save_dir / f"{sid}_layout.json").write_text(json.dumps(prep["layout"].summary()))
         (save_dir / f"{sid}_steer.json").write_text(json.dumps(steer.stats))
         save_result(result, s["image"], save_dir / f"{sid}_result.png")

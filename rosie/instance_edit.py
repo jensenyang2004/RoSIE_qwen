@@ -61,18 +61,20 @@ def instance_prompts(pipe, prep: dict):
 
 def edit(pipe, sample: dict, resolution: int = 1024, local_mode: str = "text", strict: bool = True,
          bind: bool = True, seed: int = 0, use_kv_cache: bool = True, steer: RotationSteer | None = None,
-         prompt_pos: str = "stacked"):
+         prompt_pos: str = "stacked", sigmas: list | None = None):
     """Returns (PIL image at the generation size, prep). steer: rotation steering (rosie/steer.py); its per-block
-    stats are in steer.stats afterwards. prompt_pos: RoPE positions of the instance prompts (rosie/positions.py)."""
+    stats are in steer.stats afterwards. prompt_pos: RoPE positions of the instance prompts (rosie/positions.py).
+    sigmas: the step schedule (rosie/schedule.py); None = the model's own (Turbo: 8 steps)."""
     if prompt_pos != "stacked" and not bind:
         raise ValueError("shared prompt positions need the binding (otherwise rows read prompts at equal positions)")
     prep = prepare(Prompter.from_pipe(pipe), sample, resolution, local_mode, strict)
     L = prep["layout"]
     allowed = allowed_mask(L, bind)
-    steered = nullcontext() if steer is None else steering(pipe.transformer, steer, L, pipe.config.sample_sigmas)
+    sched = pipe.config.sample_sigmas if sigmas is None else sigmas
+    steered = nullcontext() if steer is None else steering(pipe.transformer, steer, L, sched)
     with instance_prompts(pipe, prep), binding(pipe.transformer, allowed, L.H * L.W), \
             prompt_positions(pipe.transformer, L, prompt_pos), steered:
         out = pipe(prompt=GLOBAL_PROMPT, image=sample["image"], height=prep["h"], width=prep["w"],
-                   output_resolution=resolution, use_kv_cache=use_kv_cache,
+                   output_resolution=resolution, use_kv_cache=use_kv_cache, sigmas=sigmas,
                    generator=torch.Generator("cpu").manual_seed(seed)).images[0]
     return out, prep

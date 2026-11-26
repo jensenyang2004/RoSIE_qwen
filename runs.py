@@ -31,9 +31,11 @@ def run_folder(args, prefix: str) -> Path:
     args_path = save_dir / "args.json"
     if args_path.exists() and not args.overwrite:
         old = {k: v for k, v in json.loads(args_path.read_text()).items() if k not in RUN_CONTROL}
-        if old != settings:
-            diff = {k: (old.get(k), settings.get(k)) for k in old.keys() | settings.keys()
-                    if old.get(k) != settings.get(k)}
+        # a setting the old folder does not have counts as None, so a flag added later with default None
+        # (e.g. --steps) does not lock earlier folders
+        diff = {k: (old.get(k), settings.get(k)) for k in old.keys() | settings.keys()
+                if old.get(k) != settings.get(k)}
+        if diff:
             raise SystemExit(f"{save_dir} was made with other settings {diff} (old, new): use another --exp_name, "
                              f"or --overwrite")
     args_path.write_text(json.dumps(settings, indent=2))
